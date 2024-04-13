@@ -2,9 +2,7 @@ import os
 import json
 import unittest
 from djl_python.properties_manager.properties import Properties
-from djl_python.properties_manager.tnx_properties import (
-    TransformerNeuronXProperties, TnXGenerationStrategy, TnXModelSchema,
-    TnXMemoryLayout, TnXDtypeName)
+from djl_python.properties_manager.tnx_properties import TransformerNeuronXProperties, TnXGenerationStrategy, TnXModelSchema, TnXMemoryLayout, TnXDtypeName
 from djl_python.properties_manager.trt_properties import TensorRtLlmProperties
 from djl_python.properties_manager.ds_properties import DeepSpeedProperties, DsQuantizeMethods
 from djl_python.properties_manager.hf_properties import HuggingFaceProperties, HFQuantizeMethods
@@ -139,6 +137,7 @@ class TestConfigManager(unittest.TestCase):
             "cache_layout": "SBH",
             "all_reduce_dtype": "float32",
             "cast_logits_dtype": "float32",
+            "draft_model_compiled_path": "s3://test/bucket/folder",
         }
         tnx_configs = TransformerNeuronXProperties(**common_properties,
                                                    **properties)
@@ -160,8 +159,8 @@ class TestConfigManager(unittest.TestCase):
         self.assertTrue("-O3" in neuron_cc)
         self.assertTrue("--enable-mixed-precision-accumulation" in neuron_cc)
         self.assertTrue("--enable-saturate-infinity" in neuron_cc)
-        self.assertTrue(tnx_configs.group_query_attention,
-                        properties['group_query_attention'])
+        self.assertEqual(tnx_configs.group_query_attention,
+                         properties['group_query_attention'])
         self.assertTrue(tnx_configs.fuse_qkv)
         self.assertEqual(tnx_configs.rolling_batch_strategy,
                          TnXGenerationStrategy.continuous_batching)
@@ -169,6 +168,8 @@ class TestConfigManager(unittest.TestCase):
                          TnXMemoryLayout.LAYOUT_HSB)
         self.assertTrue(tnx_configs.on_device_embedding)
         self.assertEqual(tnx_configs.partition_schema, TnXModelSchema.legacy)
+        self.assertEqual(tnx_configs.draft_model_compiled_path,
+                         properties['draft_model_compiled_path'])
         self.assertEqual(tnx_configs.attention_layout,
                          TnXMemoryLayout.LAYOUT_HSB)
         self.assertEqual(tnx_configs.cache_layout, TnXMemoryLayout.LAYOUT_SBH)

@@ -14,6 +14,7 @@
 import copy
 import torch
 from enum import Enum
+from typing import Optional, Any
 from transformers.generation import GenerationConfig
 from djl_python.rolling_batch.rolling_batch import Request, filter_unused_generation_params
 from djl_python.transformers_neuronx_scheduler.utils import Generation, FinishReason, GeneratedText, TokenDecoder
@@ -57,6 +58,7 @@ class Slot:
         self._next_token_text = ""
         self._cache_id = torch.zeros(1)
         self._token_decoder = None
+        self._token_acceptor = None
         self.seed = 0
 
     @property
@@ -87,8 +89,12 @@ class Slot:
     def decoder(self) -> TokenDecoder:
         return self._token_decoder
 
+    @property
+    def acceptor(self) -> Optional[Any]:
+        return self._token_acceptor
+
     def assign(self, request: Request, generation_config: GenerationConfig,
-               tokenizer):
+               tokenizer, token_acceptor=None):
         """Assign a request to a slot.
 
         Args:
@@ -98,6 +104,8 @@ class Slot:
                 The base generation config (might be modified by the request generation parameters).
             tokenizer:
                 The tokenizer used to decode token.
+            token_acceptor:
+                The speculative token acceptor when speculative decoding
         """
         self._state = Slot.State.READY
         self._request_id = request.id
@@ -105,12 +113,14 @@ class Slot:
         self._generation_config = copy.deepcopy(generation_config)
         # Update generation config with token chooser parameters
         param = translate_neuronx_params(request.parameters)
+        self.seed = 0
         self._generation_config.do_sample = param.get("do_sample", False)
         if self._generation_config.do_sample:
             self._generation_config.temperature = param.get("temperature", 0.9)
             self._generation_config.top_k = param.get("top_k", 0)
             self._generation_config.top_p = param.get("top_p", 1.0)
             self._generation_config.typical_p = param.get("typical_p", 1.0)
+            self.seed = int(param.get("seed", 0))
 
         self._generation_config.repetition_penalty = param.get(
             "repetition_penalty", 1.0)
@@ -118,7 +128,7 @@ class Slot:
             "max_new_tokens", 30)
         # TODO: stop_sequences, ignore_eos_token
         self._token_decoder = TokenDecoder(tokenizer)
-        self.seed = int(param.get("seed", 0))
+        self._token_acceptor = token_acceptor
         filter_unused_generation_params(param, NEURON_GENERATION_PARAMS,
                                         "neuron")
 

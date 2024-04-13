@@ -66,6 +66,7 @@ class TnXModelSchema(str, Enum):
 class TnXGenerationStrategy(str, Enum):
     continuous_batching = "continuous_batching"
     naive_rolling_batch = "naive_rolling_batch"
+    speculative_rolling_batch = "speculative_rolling_batch"
 
 
 class TnXMemoryLayout(str, Enum):
@@ -92,6 +93,7 @@ class TransformerNeuronXProperties(Properties):
     amp: Optional[str] = None
     quantize: Optional[TnXQuantizeMethods] = None
     compiled_graph_path: Optional[str] = None
+    draft_model_compiled_path: Optional[str] = None
     task: Optional[str] = None
     save_mp_checkpoint_path: Optional[str] = None
     group_query_attention: Optional[str] = None
@@ -161,9 +163,8 @@ class TransformerNeuronXProperties(Properties):
                 )
         return batch_size
 
-    @validator('compiled_graph_path')
-    def validate_compiled_graph_path(cls, path: str) -> str:
-        """Transformer neuronx accepts compiled graph paths as directories and s3 uri"""
+    @staticmethod
+    def compiled_path_validator(path: str) -> str:
         if not re.search("^s3:\/\/([^/]+)\/([\w\W]+)", path):
             if not os.path.isdir(path):
                 raise ValueError(
@@ -172,8 +173,19 @@ class TransformerNeuronXProperties(Properties):
                 )
             else:
                 path = os.path.join(os.getcwd(), path)
-        os.environ["NEURON_COMPILE_CACHE_URL"] = path
         return path
+
+    @validator('compiled_graph_path')
+    def validate_compiled_graph_path(cls, path: str) -> str:
+        """Transformer neuronx accepts compiled graph paths as directories and s3 uri"""
+        os.environ["NEURON_COMPILE_CACHE_URL"] = cls.compiled_path_validator(
+            path)
+        return path
+
+    @validator('draft_model_compiled_path')
+    def validate_draft_compiled_graph_path(cls, path: str) -> str:
+        """Transformer neuronx accepts compiled graph paths as directories and s3 uri"""
+        return cls.compiled_path_validator(path)
 
     @validator('group_query_attention')
     def validate_gqa(cls, gqa: str) -> str:
@@ -246,5 +258,7 @@ class TransformerNeuronXProperties(Properties):
             elif properties.get('compiled_graph_path') is not None:
                 properties['model_loader'] = TnXModelLoaders.tnx
             elif properties.get('context_length_estimate') is not None:
+                properties['model_loader'] = TnXModelLoaders.tnx
+            elif properties.get("draft_model_id") is not None:
                 properties['model_loader'] = TnXModelLoaders.tnx
         return properties

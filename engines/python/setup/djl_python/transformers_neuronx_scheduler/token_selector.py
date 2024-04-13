@@ -13,8 +13,9 @@
 # The below code is heavily inspired from Optimum Neuron under the following link:
 # https://github.com/huggingface/optimum-neuron/blob/974f34336bb36b1b64890c191c558a1575372be7/optimum/neuron/generation/token_selector.py
 
+import logging
 import copy
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Tuple
 import torch
 from transformers.generation import (
     GenerationConfig,
@@ -25,6 +26,9 @@ from transformers.generation import (
 )
 from transformers.generation.utils import GenerationMode
 from transformers.generation import LogitsWarper
+from transformers_neuronx.speculation import TokenAcceptor
+from djl_python.transformers_neuronx_scheduler.slot import Slot
+from transformers_neuronx.speculation import SpeculativeGenerator, DraftProvider, TokenAcceptor, DefaultTokenAcceptor
 
 
 class FastTopKLogitsWarper(LogitsWarper):
@@ -216,3 +220,153 @@ class TokenSelector:
             # Convert the topk relative tokens to actual vocabulary tokens
             next_tokens = torch.gather(next_token_indices, 1, next_tokens)
         return next_tokens.squeeze(1)
+
+class LMIDraftModelForSpeculation(DraftProvider):
+    """
+    Standard Implementation of Draft model provider that auto-regressively speculates k tokens.
+    """
+
+    def __init__(self, model, **kwargs) -> None:
+        self.model = model
+        self.kwargs = kwargs
+
+    def _context_block(self, input_ids, start_ids):
+        """
+        Run context encoding network of the given model.
+
+        Args:
+            input_ids: The initial input tokens passed to the model
+            start_ids: The offset from the beginning of each input in a batch.
+
+        Returns:
+            token: predicted next token
+            score: predicted token score
+        """
+        next_token_scores = self.model(input_ids, None, start_ids)
+        inputs = torch.argmax(next_token_scores, dim=1, keepdim=True)
+        return inputs, next_token_scores
+
+    def __call__(
+            self,
+            input_ids: torch.Tensor,
+            k: int,
+            cache_ids: Optional[torch.Tensor] = None,
+            start_ids: Optional[torch.Tensor] = None,
+            slot: Slot = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Perform standard auto-regressive token generation using the draft model, to speculate k-tokens.
+
+        Args:
+            input_ids: Either context, next token, or draft tokens. shape=(batch, seqlen)
+            k: The number of speculative tokens
+            cache_ids: The positions in the KV cache that should be updated. shape=(seqlen,)
+            start_ids: The offset from the beginning of each input in a batch. shape=(batch,)
+
+        Returns:
+            tokens: The next token prediction(s)
+            probabilities: The next token probability(s)
+        """
+        start_len = 0
+        if cache_ids:
+            start_len = cache_ids.item()
+
+        if start_len == 0:  # run context network as cache_id location starts from 0.
+            return self._context_block(input_ids, start_ids)
+
+        next_token_scores = self.model(input_ids, cache_ids, start_ids)
+
+        scores = []
+        tokens = []
+
+        # Speculate k tokens in auto regressive mode.
+        for cur_len in range(start_len, start_len + k):
+            next_len = cur_len + 1
+            inputs = torch.argmax(next_token_scores, keepdim=True, dim=1)
+
+            scores.append(next_token_scores)
+            tokens.append(inputs)
+
+            if next_len >= start_len + k:
+                break
+
+            cache_ids = torch.as_tensor([next_len], dtype=torch.int32)
+            next_token_scores = self.model(inputs, cache_ids, start_ids)
+
+        return (
+            torch.cat(tokens, dim=1),
+            torch.cat(scores, dim=0)
+        )
+
+
+class LMITokenAcceptor(TokenAcceptor):
+    """
+    Optimized TokenAcceptor based on original DeepMind paper: https://arxiv.org/pdf/2302.01318.pdf
+    """
+    def __call__(
+            self,
+            draft_ids: torch.Tensor,
+            draft_scores: torch.Tensor,
+            target_scores: torch.Tensor,
+            slot: Slot,
+    ) -> torch.Tensor:
+        draft_token_len, draft_vocab = draft_scores.shape
+        target_token_len, target_vocab = target_scores.shape
+        assert draft_vocab == target_vocab  # vocab size should be same
+        assert draft_token_len + 1 == target_token_len  # target should include additional token predicted
+
+        draft_probabilities = torch.softmax(draft_scores, dim=-1)
+        target_probabilities = torch.softmax(target_scores, dim=-1)
+        index = draft_ids.view(-1, 1)
+        target_probs = torch.gather(target_probabilities[:-1], 1, index)
+        draft_probs = torch.gather(draft_probabilities, 1, index)
+
+        random = torch.rand(draft_probs.shape)
+        ratio = torch.clamp(target_probs / draft_probs, max=1.0)
+        accepted = torch.less(random, ratio)
+
+        # Minimum will return the first occurrence of 0 or False (i.e. rejection)
+        minimum = torch.min(accepted.view(torch.uint8), dim=0)
+        value = minimum.values.item()
+        index = minimum.indices.item()
+
+        if value != 0: # If we didn't get a rejection this means all drafts were accepted
+            next_token, next_log_probs = slot.select(draft_ids, target_probabilities[-1:])
+            next_token_id = torch.LongTensor([[next_token]])
+            return torch.cat((draft_ids, next_token_id), dim=1)
+        else:
+            prob_diff = target_probabilities[index:index + 1] - draft_probabilities[index: index + 1]
+            prob_diff = torch.clamp(prob_diff, min=0.0)
+            next_token, next_log_probs = slot.select(draft_ids[index - 1: index], prob_diff)
+            #next_token, next_log_probs = slot.select(draft_ids[index - 1: index], target_probabilities[index:index + 1])
+            next_token_id = torch.LongTensor([[next_token]])
+            return torch.cat((draft_ids[:, :index], next_token_id), dim=1)
+
+
+class LMIGreedyTokenAcceptor(TokenAcceptor):
+    """
+    Optimized TokenAcceptor based on original DeepMind paper: https://arxiv.org/pdf/2302.01318.pdf
+    """
+    def __call__(
+            self,
+            draft_ids: torch.Tensor,
+            draft_scores: torch.Tensor,
+            target_scores: torch.Tensor,
+            slot: Slot,
+    ) -> torch.Tensor:
+        draft_token_len, draft_vocab = draft_scores.shape
+        target_token_len, target_vocab = target_scores.shape
+        assert draft_vocab == target_vocab  # vocab size should be same
+        assert draft_token_len + 1 == target_token_len  # target should include additional token predicted
+
+        target_probabilities = torch.softmax(target_scores, dim=-1)
+        target_ids = torch.argmax(target_probabilities, dim=1)
+        draft_ids = draft_ids.squeeze()
+
+        # Minimum will return the first occurrence of 0 or False (i.e. rejection)
+        index = torch.where(draft_ids != target_ids[:-1])[0]
+
+        if len(index) == 0: # If we didn't get a rejection this means all drafts were accepted
+            return torch.unsqueeze(target_ids, 0)
+        else:
+            return torch.unsqueeze(target_ids[:index[0]+1], 0)
