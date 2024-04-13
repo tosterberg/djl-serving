@@ -44,7 +44,8 @@ def parse_input_with_client_batch(inputs: Input, tokenizer,
             errors[i] = str(e)
             continue
 
-        if is_chat_completions_request(input_map):
+        is_chat = is_chat_completions_request(input_map)
+        if is_chat:
             _inputs, _param = parse_chat_completions_request(
                 input_map, True, tokenizer)
         else:
@@ -64,7 +65,11 @@ def parse_input_with_client_batch(inputs: Input, tokenizer,
             # set server provided seed if seed is not part of request
             if item.contains_key("seed"):
                 _param["seed"] = item.get_as_string(key="seed")
-        if not "output_formatter" in _param:
+        if _param["stream"] and "output_formatter" not in _param and not is_chat:
+            _param["output_formatter"] = "jsonlines"
+        if not _param["stream"] and "output_formatter" not in _param and not is_chat:
+            _param["output_formatter"] = "json"
+        elif not "output_formatter" in _param:
             _param["output_formatter"] = output_formatter
 
         for _ in range(input_size[i]):

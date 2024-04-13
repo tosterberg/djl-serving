@@ -12,6 +12,7 @@
 # the specific language governing permissions and limitations under the License.
 
 import json
+import copy
 import logging
 from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
 from djl_python import Input, Output
@@ -20,7 +21,7 @@ from djl_python.rolling_batch.rolling_batch import get_content_type_from_output_
 from djl_python.rolling_batch.neuron_rolling_batch import NeuronRollingBatch
 from djl_python.stable_diffusion_inf2 import StableDiffusionNeuronXService
 from djl_python.streaming_utils import StreamingUtils
-from djl_python.properties_manager.tnx_properties import TransformerNeuronXProperties, TnXGenerationStrategy
+from djl_python.properties_manager.tnx_properties import TransformerNeuronXProperties, TnXGenerationStrategy, TnXModelLoaders
 from djl_python.properties_manager.properties import StreamingEnum
 from djl_python.neuron_utils.model_loader import TNXModelLoader, OptimumModelLoader
 from djl_python.neuron_utils.utils import task_from_config
@@ -42,6 +43,7 @@ class TransformersNeuronXService(object):
         self.tokenizer = None
         self.rolling_batch = None
         self.config = None
+        self.draft_model = None
         self.rolling_batch_config = dict()
         self._model_loader_class = OptimumModelLoader
 
@@ -88,7 +90,10 @@ class TransformersNeuronXService(object):
             trust_remote_code=self.config.trust_remote_code)
 
         if self.config.rolling_batch != "disable" and self.config.rolling_batch_strategy is None:
-            if self.model_config.model_type in OPTIMUM_CAUSALLM_CONTINUOUS_BATCHING_MODELS:
+            if self.draft_model:
+                self.config.rolling_batch_strategy = TnXGenerationStrategy.speculative_rolling_batch
+            elif (self.model_config.model_type in OPTIMUM_CAUSALLM_CONTINUOUS_BATCHING_MODELS
+                  and self.config.max_rolling_batch_size > 1):
                 self.config.rolling_batch_strategy = TnXGenerationStrategy.continuous_batching
             else:
                 self.config.rolling_batch_strategy = TnXGenerationStrategy.naive_rolling_batch
@@ -111,6 +116,10 @@ class TransformersNeuronXService(object):
         if self.config.rolling_batch != "disable":
             self.rolling_batch_config[
                 "output_formatter"] = self.config.output_formatter
+            if self.draft_model:
+                self.rolling_batch_config["draft_model"] = self.draft_model
+                self.rolling_batch_config[
+                    "spec_length"] = self.config.spec_length
             self.rolling_batch = NeuronRollingBatch(
                 self.model, self.tokenizer, self.config.batch_size,
                 self.config.n_positions, self.config.rolling_batch_strategy,
@@ -120,7 +129,35 @@ class TransformersNeuronXService(object):
         self.model_loader = self._model_loader_class(
             config=self.config, model_config=self.model_config)
 
+    @staticmethod
+    def set_draft_model_properties(properties):
+        draft_properties = copy.deepcopy(properties)
+        # Optimum currently doesn't support speculative decoding
+        draft_properties["model_loader"] = TnXModelLoaders.tnx
+        draft_model_id = draft_properties.pop("draft_model_id")
+        draft_properties["model_id"] = draft_model_id
+        draft_compiled = draft_properties.pop("draft_model_compiled_path",
+                                              None)
+        if draft_compiled:
+            draft_properties["compiled_graph_path"] = draft_compiled
+        return draft_properties
+
+    def pre_model_load(self, properties):
+        if properties.get("draft_model_id"):
+            logging.info(
+                f"Loading draft model {properties.get('draft_model_id')} ...")
+            draft_properties = self.set_draft_model_properties(properties)
+            self.initialize_draft_model(draft_properties)
+            logging.info(
+                f"Loading target model {properties.get('model_id')} ...")
+
+    def initialize_draft_model(self, properties):
+        self.set_configs(properties)
+        self.set_model_loader()
+        self.draft_model = self.model_loader.load_draft_model()
+
     def initialize(self, properties):
+        self.pre_model_load(properties)
         self.set_configs(properties)
         self.set_tokenizer()
         self.set_model_loader()
@@ -129,6 +166,7 @@ class TransformersNeuronXService(object):
         self.initialized = True
 
     def partition(self, properties):
+        self.pre_model_load(properties)
         self.set_configs(properties)
         self.set_tokenizer()
         self.set_model_loader()

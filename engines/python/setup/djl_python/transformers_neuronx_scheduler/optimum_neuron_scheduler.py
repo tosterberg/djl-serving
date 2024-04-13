@@ -17,13 +17,16 @@ from typing import List, Optional, Dict
 
 import torch
 import logging
+import threading
 from abc import ABC, abstractmethod
+from transformers_neuronx import base
 from transformers import PreTrainedTokenizerBase
 
 from djl_python.transformers_neuronx_scheduler.slot import Slot
 from djl_python.rolling_batch.rolling_batch import Request, filter_unused_generation_params
-from djl_python.transformers_neuronx_scheduler.token_selector import TokenSelector
+from djl_python.transformers_neuronx_scheduler.token_selector import TokenSelector, LMITokenAcceptor, LMIDraftModelForSpeculation, LMIGreedyTokenAcceptor
 from djl_python.transformers_neuronx_scheduler.utils import Generation, FinishReason, GeneratedText, TokenDecoder
+from transformers_neuronx.speculation import SpeculativeGenerator, DraftModelForSpeculation, TokenAcceptor, DefaultTokenAcceptor
 
 
 class NeuronGenerator(ABC):
@@ -68,7 +71,6 @@ class NeuronGenerator(ABC):
             A list of `Generation` for each request.
         """
 
-    @abstractmethod
     def prepare_model_inputs(
         self,
         input_ids: torch.LongTensor,
@@ -86,6 +88,11 @@ class NeuronGenerator(ABC):
         Return:
             A dict of `Tensor`'s for each argument
         """
+        return {
+            "input_ids": input_ids,
+            "cache_ids": cache_ids,
+            "start_ids": seq_ids
+        }
 
     def _generate_token(
         self,
@@ -175,7 +182,7 @@ class ContinuousBatchingNeuronGenerator(NeuronGenerator):
     """A Generator for Neuron models using TNXs continuous batching KV cache."""
 
     def __init__(self, model, tokenizer: PreTrainedTokenizerBase, batch_size,
-                 n_positions):
+                 n_positions, **kwargs):
         # Specify padding options for decoder-only architecture
         tokenizer.pad_token_id = tokenizer.eos_token_id
         tokenizer.padding_side = "right"
@@ -296,25 +303,12 @@ class ContinuousBatchingNeuronGenerator(NeuronGenerator):
         return self._generate_token(input_ids, attention_mask, cache_ids,
                                     seq_ids)
 
-    def prepare_model_inputs(
-        self,
-        input_ids: torch.LongTensor,
-        attention_mask: Optional[torch.LongTensor] = None,
-        cache_ids: Optional[torch.LongTensor] = None,
-        seq_ids: Optional[torch.LongTensor] = None,
-    ) -> Dict:
-        return {
-            "input_ids": input_ids,
-            "cache_ids": cache_ids,
-            "start_ids": seq_ids
-        }
-
 
 class NaiveRollingBatchNeuronGenerator(NeuronGenerator):
     """A Generator for Neuron models recalculating KV cache each prefill."""
 
     def __init__(self, model, tokenizer: PreTrainedTokenizerBase, batch_size,
-                 n_positions):
+                 n_positions, **kwargs):
         # Specify padding options for decoder-only architecture
         tokenizer.pad_token_id = tokenizer.eos_token_id
         tokenizer.padding_side = "left"
@@ -427,3 +421,280 @@ class NaiveRollingBatchNeuronGenerator(NeuronGenerator):
     ) -> Dict:
         return self.model.prepare_inputs_for_generation(
             input_ids, attention_mask)
+
+
+class SpeculativeRollingBatch(NeuronGenerator):
+    """A Generator for Neuron models recalculating KV cache each prefill."""
+
+    def __init__(self,
+                 model,
+                 tokenizer: PreTrainedTokenizerBase,
+                 batch_size,
+                 n_positions,
+                 draft_model=None,
+                 spec_length=4,
+                 acceptor: Optional[TokenAcceptor] = None,
+                 **kwargs):
+        # Specify padding options for decoder-only architecture
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+        tokenizer.padding_side = "left"
+        if isinstance(draft_model, base.NeuronModelBase):
+            self.draft_model = LMIDraftModelForSpeculation(draft_model)
+        else:
+            self.draft_model = draft_model
+        self.spec_length = spec_length
+        self.speculated_generations= list()
+        self.acceptor = acceptor or LMIGreedyTokenAcceptor()
+        self.prefill_generation = None
+        super().__init__(model, tokenizer, batch_size, n_positions)
+
+    def prefill(self, new_requests: List[Request]):
+        """Prefill new requests.
+
+       Return:
+           A list of `Generation` for each request and a `CachedBatch` containing all pending requests.
+       """
+        slots = {state: [] for state in Slot.State}
+        for slot in self.slots:
+            slots[slot.state].append(slot)
+        active_slots = slots[Slot.State.READY]
+        empty_slots = slots[Slot.State.EMPTY]
+        if len(empty_slots) < len(new_requests):
+            raise ValueError(
+                f"Cannot prefill {len(new_requests)} new request(s) with only {len(empty_slots)} empty slots."
+                f"Please align the number of concurrent requests with the static batch size: {self.batch_size}."
+            )
+        # Assign each request to an empty slot
+        logging.debug(
+            f"Prefilling {len(new_requests)} new request(s) with {len(empty_slots)} empty slot(s)"
+        )
+        for request in new_requests:
+            slot = empty_slots.pop()
+            slot.assign(request, self.model.generation_config, self.tokenizer)
+            logging.debug(
+                f"Request {slot.request_id} assigned to slot {slot.id}")
+        # Reconstruct the full inputs (without padding)
+        inputs = [slot.inputs for slot in self.slots]
+        # Tokenize with padding
+        padded_inputs = self.tokenizer(inputs,
+                                       return_tensors="pt",
+                                       padding=True)
+        #  If needed truncate sequences to fit into the static dimensions
+        if padded_inputs.input_ids.shape[-1] > self.n_positions:
+            logging.warning(f"Input tokens: {padded_inputs.input_ids.shape[-1]} - is larger than the"
+                            f"maximum for the model, truncating input...")
+        seq_length = min(padded_inputs.input_ids.shape[-1], self.n_positions)
+        input_ids = padded_inputs.input_ids[:, :seq_length]
+        attention_mask = padded_inputs.attention_mask[:, :seq_length]
+        # Each slot must be reset with the padded inputs
+        for i, slot in enumerate(self.slots):
+            if slot.state != slot.state.EMPTY:
+                slot_input_ids = input_ids[i:i + 1, :]
+                # Padded input ids are also required to set logits processors and stopping criterias
+                selector = TokenSelector.create(slot_input_ids,
+                                                slot.generation_config,
+                                                self.model, self.n_positions)
+                slot_input_ids = slot_input_ids.squeeze().type(torch.int64)
+                slot_attention_mask = attention_mask[i]
+                slot.reset(slot_input_ids, slot_attention_mask, selector,
+                           torch.LongTensor([0]))
+        # Clear KV cache
+        def prefill_draft(i_ids):
+            self.draft_model.model.reset()
+            _, _ = self.draft_model(i_ids, self.spec_length, None, None, self.slots[0])
+
+        def prefill_target(i_ids, attn_mask):
+            self.model.reset_generation()
+            self.prefill_generation = self._generate_token(i_ids, attn_mask)
+
+        target_task = threading.Thread(target=prefill_target(input_ids, attention_mask), args=(input_ids,))
+        draft_task = threading.Thread(target=prefill_draft, args=(input_ids,))
+        target_task.start()
+        draft_task.start()
+        draft_task.join()
+        target_task.join()
+        for slot in active_slots:
+            slot.resume()
+        logging.debug("Model ready for decoding")
+        generations = self.prefill_generation.copy()
+        self.prefill_generation.clear()
+        return generations
+
+    def early_return_speculative_tokens(self, slot) -> List[Generation]:
+        generation, finish_reason = self.speculated_generations.pop(0)
+        if finish_reason:
+            self._postprocess(slot)
+        return [generation]
+
+
+    def decode(self) -> List[Generation]:
+        """Decode the specified prefilled requests.
+
+        Args:
+            batches (`List[CachedBatch]`):
+                A list of previous batches containing the prefilled requests.
+
+        Return:
+            A list of `Generation` for each request and a `CachedBatch` containing all pending requests.
+        """
+        if len(self.speculated_generations) > 0:
+            return self.early_return_speculative_tokens(self.slots[0])
+        # Reconstruct input_ids and attention_mask from slots
+        input_ids = None
+        attention_mask = None
+        for i, slot in enumerate(self.slots):
+            if slot.state != Slot.State.EMPTY:
+                if input_ids is None:
+                    # Create blank inputs covering all slots (even empty ones)
+                    input_ids = torch.full(
+                        [self.model.batch_size, 1],
+                        fill_value=self.tokenizer.eos_token_id,
+                        dtype=torch.int64)
+                # input_ids are simply the tokens generated by the last decode or prefill requests (other tokens are cached)
+                input_ids[i, 0] = slot.next_token
+                if attention_mask is None:
+                    # Create default mask covering all slots (even empty ones)
+                    attention_mask = torch.zeros(
+                        [self.model.batch_size,
+                         slot.attention_mask.size(-1)],
+                        dtype=torch.int64)
+                    attention_mask[:, -1] = 1
+                attention_mask[i, :] = slot.attention_mask
+        if input_ids is None:
+            raise ValueError(
+                "Unable to decode tokens for non-prefilled batches (probably due to a previous failure)"
+            )
+        return self._speculative_generate_token(input_ids, attention_mask)
+
+    def make_generations(self, request_id, slot, next_token,
+                         next_log_prob, next_token_text):
+        """Build the generation, and finish reason for response
+        TODO: Refactor into a dataclass input
+        """
+        generated_text = None
+        finish_reason = None
+        if slot.is_slot_eos_token(next_token):
+            finish_reason = FinishReason.FINISH_REASON_EOS_TOKEN
+        elif next_token == self.tokenizer.eos_token_id:
+            finish_reason = FinishReason.FINISH_REASON_EOS_TOKEN
+        elif slot.stopped:
+            finish_reason = FinishReason.FINISH_REASON_LENGTH
+        if finish_reason is not None:
+            # We must include the generated text for each finished sequence in the response
+            generated_text = GeneratedText(
+                text=slot.generated_text,
+                generated_tokens=slot.generated_tokens,
+                finish_reason=finish_reason,
+                seed=0)
+            # mark the slot as available
+        generation = Generation(
+            request_id=request_id,
+            prefill_tokens=None,
+            token_id=next_token,
+            token_logprob=next_log_prob,
+            token_text=next_token_text,
+            token_is_special=(next_token in [self.special_tokens]),
+            generated_text=generated_text,
+        )
+        return generation, finish_reason
+
+    def _postprocess(self, slot):
+        """Run a postprocess cleanup for a finished speculative decoding generation task.
+
+        Args:
+            slot (`Slot`):
+
+
+        TODO: Update to work for multiple slots
+        """
+        self.speculated_generations.clear()
+        slot.clear()
+
+    def _speculative_generate_token(
+        self,
+        input_ids: torch.LongTensor,
+        attention_mask: Optional[torch.LongTensor] = None,
+        cache_ids: Optional[torch.LongTensor] = None,
+        seq_ids: Optional[torch.LongTensor] = None,
+    ) -> List[Generation]:
+        generations = []
+        request_ids = []
+        active_slots = self.get_slots_by_state(Slot.State.READY)
+        for i, slot in enumerate(active_slots):
+            request_id = slot.request_id
+            request_ids.append(request_id)
+            current = slot._tokens.shape[0] - 1
+
+            # Boundary condition: When number of leftover tokens to be generated is less than k,
+            # we use the target model to use autoregressive generation the remaining tokens
+            if current >= self.n_positions - 1 - self.spec_length:
+                model_inputs = self.prepare_model_inputs(input_ids, attention_mask,
+                                                         cache_ids, seq_ids)
+                outputs = self.model(
+                    **model_inputs,
+                    return_dict=True,
+                )
+                next_token_logits = outputs.logits[i:i + 1, -1, :]
+                slot_input_ids = input_ids[i:i + 1, :]
+                next_token, next_log_prob = slot.select(slot_input_ids,
+                                                        next_token_logits)
+                next_token_text = slot.decoder.decode(next_token.item())
+                slot.append(next_token, next_token_text)
+                generation, finish_reason = self.make_generations(
+                    request_id, slot, next_token, None,
+                    next_token_text)
+                if finish_reason:
+                    self._postprocess(slot)
+                return [generation]
+
+            # Draft model sample
+            draft_cache_id = torch.tensor([current], dtype=torch.int32)
+
+            draft_ids, draft_next_scores = self.draft_model(
+                input_ids, self.spec_length - 1, draft_cache_id,
+                None, slot)
+            cache_ids = torch.arange(current, current + draft_ids.shape[1] + 1)
+            input_ids = torch.cat([input_ids, draft_ids], dim=1)
+            target_next_scores = self.model.model.speculative_forward(
+                input_ids=input_ids,
+                cache_ids=cache_ids,
+                start_ids=None,
+                speculation_length=self.spec_length)
+            target_next_scores = target_next_scores.squeeze(dim=-1)
+            # Accept speculative samples
+            accepted_tokens = self.acceptor(draft_ids, draft_next_scores,
+                                            target_next_scores, slot)
+
+            if accepted_tokens.dim() != 2:
+                accepted_tokens = accepted_tokens.view(1, -1)
+
+            _, num_accepted = accepted_tokens.shape
+            if self.n_positions - num_accepted < self.spec_length:
+                accepted_tokens = accepted_tokens[:, :self.n_positions -
+                                                  len(slot._tokens)]
+
+            for index in range(num_accepted):
+                next_token = accepted_tokens[:, index:index + 1]
+                next_token = torch.squeeze(next_token)
+                next_token_text = slot.decoder.decode(next_token.item())
+                slot.append(next_token, next_token_text)
+                generation, finish_reason = self.make_generations(
+                    request_id, slot, next_token, None,
+                    next_token_text)
+                if len(generations) > 0:
+                    self.speculated_generations.append((generation, finish_reason))
+                else:
+                    generations.append(generation)
+                    if finish_reason:
+                        self._postprocess(slot)
+                current = current + 1
+                if current >= self.n_positions - 1 or finish_reason:
+                    return generations
+
+            # If we accepted all tokens then we need to insert the last draft
+            # token into the KV cache since it was generated but never executed
+            if num_accepted == self.spec_length:
+                self.draft_model(accepted_tokens[:, -2:-1], 1,
+                                 torch.tensor([current - 1]),
+                                 None, slot)
+        return generations

@@ -19,8 +19,9 @@ from djl_python.tests.utils import parameterized, parameters, mock_import_module
 MOCK_MODULES = [
     "torch_neuronx", "neuronxcc", "transformers_neuronx",
     "transformers_neuronx.config", "transformers_neuronx.module",
-    "transformers_neuronx.gpt2", "transformers_neuronx.gpt2.model", "optimum",
-    "optimum.neuron", "optimum.neuron.utils", "optimum.neuron.generation",
+    "transformers_neuronx.gpt2", "transformers_neuronx.gpt2.model",
+    "transformers_neuronx.speculation", "optimum", "optimum.neuron",
+    "optimum.neuron.utils", "optimum.neuron.generation",
     "optimum.neuron.utils.version_utils", "optimum.exporters",
     "optimum.exporters.neuron", "optimum.exporters.neuron.model_configs",
     "djl_python.transformers_neuronx_scheduler.optimum_modeling",

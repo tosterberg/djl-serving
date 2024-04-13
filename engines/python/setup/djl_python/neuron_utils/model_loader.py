@@ -117,7 +117,10 @@ class TNXModelLoader(ModelLoader):
         Creates neuron config based on whether rolling batch, quantization, GQA is on
         """
         neuron_config = {}
-        if self.config.rolling_batch != "disable" and self.config.rolling_batch_strategy == TnXGenerationStrategy.continuous_batching:
+        if (self.config.rolling_batch != "disable"
+                and self.config.rolling_batch_strategy
+                == TnXGenerationStrategy.continuous_batching
+                and self.config.max_rolling_batch_size > 1):
             neuron_config["continuous_batching"] = ContinuousBatchingConfig(
                 batch_size_for_shared_caches=self.config.max_rolling_batch_size
             )
@@ -169,20 +172,15 @@ class TNXModelLoader(ModelLoader):
                 "context_length_estimate"] = self.config.context_length_estimate
 
         # Continuous batching requires positions and estimates as lists instead of int
-        if self.config.rolling_batch != "disable" and self.config.rolling_batch_strategy == TnXGenerationStrategy.continuous_batching:
+        if (self.config.rolling_batch != "disable"
+                and self.config.rolling_batch_strategy
+                == TnXGenerationStrategy.continuous_batching
+                and self.config.max_rolling_batch_size > 1):
             model_kwargs["n_positions"] = [self.config.n_positions]
             if self.config.context_length_estimate is None:
                 model_kwargs["context_length_estimate"] = [
                     self.config.n_positions
                 ]
-            elif self.config.context_length_estimate != [
-                    self.config.n_positions
-            ]:
-                raise RuntimeError(
-                    f"context_length_estimate {self.config.context_length_estimate}"
-                    f" need to be the same as n_positions {self.config.n_positions}"
-                    f" You can also unset option.context_length_estimate to make continuous batching to work"
-                )
         return model_kwargs
 
     def update_model_config_to_neuron(self) -> None:
@@ -282,6 +280,9 @@ class TNXModelLoader(ModelLoader):
         # TODO: workaround on Neuron Compiler bug for SM
         path = os.getcwd()
         os.chdir("/tmp")
+        if self.config.draft_model_id:
+            logging.info("Enabling speculative decoding")
+            self.model.enable_speculative_decoder(self.config.spec_length)
         if self.compiled_graph_path:
             logging.info(
                 f"Loading precompiled graph from {self.compiled_graph_path} ..."
@@ -320,6 +321,18 @@ class TNXModelLoader(ModelLoader):
         self.update_model_config_to_neuron()
         self.model = NeuronXModelAdapter(self.model, self.model_config,
                                          self.load_path)
+        return self.model
+
+    def load_draft_model(self) -> NeuronAutoModelForCausalLM:
+        """
+        Builds the NeuronX model.
+
+        :return: model (NeuronAutoModelForCausalLM)
+        """
+        self.set_model_format()
+        self.set_neuron_model()
+        self.maybe_compile_model()
+        self.update_model_config_to_neuron()
         return self.model
 
     def legacy_partition(self, save_path: str):
