@@ -119,7 +119,7 @@ class TNXModelLoader(ModelLoader):
         neuron_config = {}
         if self.config.rolling_batch != "disable" and self.config.rolling_batch_strategy == TnXGenerationStrategy.continuous_batching:
             neuron_config["continuous_batching"] = ContinuousBatchingConfig(
-                batch_size_for_shared_caches=self.config.max_rolling_batch_size
+                batch_size_for_shared_caches=[x for x in range(1, self.config.max_rolling_batch_size+1)]
             )
         if self.config.load_in_8bit:
             neuron_config["quant"] = QuantizationConfig(
@@ -145,7 +145,7 @@ class TNXModelLoader(ModelLoader):
         :return: Dictionary of properties
         """
         model_kwargs = {
-            "batch_size": self.config.batch_size,
+            "batch_size": [x for x in range(1, self.config.batch_size+1)],
             "amp": self.config.amp,
             "tp_degree": self.config.tensor_parallel_degree,
             "n_positions": self.config.n_positions,
