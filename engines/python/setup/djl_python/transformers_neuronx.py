@@ -18,6 +18,7 @@ from djl_python import Input, Output
 from djl_python.encode_decode import decode, encode
 from djl_python.rolling_batch.rolling_batch import get_content_type_from_output_formatter
 from djl_python.rolling_batch.neuron_rolling_batch import NeuronRollingBatch
+from djl_python.rolling_batch.vllm_neuron_rolling_batch import NeuronVLLMRollingBatch
 from djl_python.stable_diffusion_inf2 import StableDiffusionNeuronXService
 from djl_python.streaming_utils import StreamingUtils
 from djl_python.properties_manager.tnx_properties import TransformerNeuronXProperties, TnXGenerationStrategy
@@ -122,10 +123,7 @@ class TransformersNeuronXService(object):
 
     def initialize(self, properties):
         self.set_configs(properties)
-        self.set_tokenizer()
-        self.set_model_loader()
-        self.model = self.model_loader.load_model()
-        self.set_rolling_batch()
+        self.rolling_batch = NeuronVLLMRollingBatch(properties)
         self.initialized = True
 
     def partition(self, properties):
