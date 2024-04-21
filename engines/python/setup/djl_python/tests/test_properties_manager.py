@@ -149,7 +149,6 @@ class TestConfigManager(unittest.TestCase):
             "enable_saturate_infinity": "true",
             "rolling_batch_strategy": "continuous_batching",
             "collectives_layout": "HSB",
-            "on_device_embedding": "true",
             "partition_schema": "legacy",
             "attention_layout": "HSB",
             "cache_layout": "SBH",
@@ -183,7 +182,6 @@ class TestConfigManager(unittest.TestCase):
                          TnXGenerationStrategy.continuous_batching)
         self.assertEqual(tnx_configs.collectives_layout,
                          TnXMemoryLayout.LAYOUT_HSB)
-        self.assertTrue(tnx_configs.on_device_embedding)
         self.assertEqual(tnx_configs.partition_schema, TnXModelSchema.legacy)
         self.assertEqual(tnx_configs.attention_layout,
                          TnXMemoryLayout.LAYOUT_HSB)
@@ -199,6 +197,23 @@ class TestConfigManager(unittest.TestCase):
             self.assertEqual(configs.context_length_estimate, [256])
             del properties['context_length_estimate']
 
+        def test_tnx_embedding_configs_file():
+            properties['on_device_embedding_config'] = './sample.json'
+            embedding_config = {
+                "do_sample": True,
+                "top_k": 100,
+            }
+            with open('sample.json', 'w') as fp:
+                json.dump(embedding_config, fp)
+
+            tnx_config = TransformerNeuronXProperties(**properties,
+                                                      **common_properties)
+            self.assertDictEqual(tnx_config.on_device_embedding_config,
+                                 embedding_config)
+            os.remove('sample.json')
+            del properties['on_device_embedding_config']
+
+        test_tnx_embedding_configs_file()
         test_tnx_cle_int('256')
 
     @parameters([{

@@ -12,11 +12,12 @@
 # the specific language governing permissions and limitations under the License.
 
 import logging
+import json
 import os
 import re
-from typing import Optional, List
+from typing import Optional, List, Any
 
-from pydantic.v1 import validator, root_validator
+from pydantic.v1 import validator, root_validator, Field
 from enum import IntEnum, Enum
 
 from djl_python.properties_manager.properties import Properties, RollingBatchEnum, StreamingEnum
@@ -74,7 +75,7 @@ class TnXMemoryLayout(str, Enum):
     LAYOUT_SBH = "SBH"
 
 
-TNX_SUPPORTED_ROLLING_BATCH_TYPES = ['auto']
+TNX_SUPPORTED_ROLLING_BATCH_TYPES = ['auto', 'tnx', 'lmi_dist']
 
 
 class TransformerNeuronXProperties(Properties):
@@ -98,7 +99,8 @@ class TransformerNeuronXProperties(Properties):
     model_loader: Optional[TnXModelLoaders] = None
     rolling_batch_strategy: Optional[TnXGenerationStrategy] = None
     fuse_qkv: Optional[bool] = False
-    on_device_embedding: Optional[bool] = False
+    on_device_embedding_config: Optional[Any] = Field(default_factory=dict)
+    on_device_embedding: Optional[Any] = None
     attention_layout: Optional[TnXMemoryLayout] = None
     collectives_layout: Optional[TnXMemoryLayout] = None
     cache_layout: Optional[TnXMemoryLayout] = None
@@ -247,4 +249,25 @@ class TransformerNeuronXProperties(Properties):
                 properties['model_loader'] = TnXModelLoaders.tnx
             elif properties.get('context_length_estimate') is not None:
                 properties['model_loader'] = TnXModelLoaders.tnx
+            elif properties.get('context_length_estimate') is not None:
+                properties['model_loader'] = TnXModelLoaders.tnx
+            elif properties.get('attention_layout') is not None:
+                properties['model_loader'] = TnXModelLoaders.tnx
+            elif properties.get('cache_layout') is not None:
+                properties['model_loader'] = TnXModelLoaders.tnx
+            elif properties.get('all_reduce_dtype') is not None:
+                properties['model_loader'] = TnXModelLoaders.tnx
+            elif properties.get('cast_logits_dtype') is not None:
+                properties['model_loader'] = TnXModelLoaders.tnx
         return properties
+
+    @validator('on_device_embedding_config', pre=True)
+    def set_embedding_config(cls, embedding_config_path):
+        with open(embedding_config_path, "r") as f:
+            return json.load(f)
+
+
+    @validator('on_device_embedding')
+    def set_on_device_embedding_object(cls):
+        if len(cls.on_device_embedding_config.keys()) > 1:
+            pass
