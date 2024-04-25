@@ -93,8 +93,11 @@ class Slot:
     def acceptor(self) -> Optional[Any]:
         return self._token_acceptor
 
-    def assign(self, request: Request, generation_config: GenerationConfig,
-               tokenizer, token_acceptor=None):
+    def assign(self,
+               request: Request,
+               generation_config: GenerationConfig,
+               tokenizer,
+               token_acceptor=None):
         """Assign a request to a slot.
 
         Args:

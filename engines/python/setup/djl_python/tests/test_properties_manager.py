@@ -138,6 +138,7 @@ class TestConfigManager(unittest.TestCase):
             "all_reduce_dtype": "float32",
             "cast_logits_dtype": "float32",
             "draft_model_compiled_path": "s3://test/bucket/folder",
+            "speculative_draft_model": "/path/to/model"
         }
         tnx_configs = TransformerNeuronXProperties(**common_properties,
                                                    **properties)
@@ -170,6 +171,8 @@ class TestConfigManager(unittest.TestCase):
         self.assertEqual(tnx_configs.partition_schema, TnXModelSchema.legacy)
         self.assertEqual(tnx_configs.draft_model_compiled_path,
                          properties['draft_model_compiled_path'])
+        self.assertEqual(tnx_configs.speculative_draft_model,
+                         properties['speculative_draft_model'])
         self.assertEqual(tnx_configs.attention_layout,
                          TnXMemoryLayout.LAYOUT_HSB)
         self.assertEqual(tnx_configs.cache_layout, TnXMemoryLayout.LAYOUT_SBH)

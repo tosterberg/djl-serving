@@ -221,6 +221,7 @@ class TokenSelector:
             next_tokens = torch.gather(next_token_indices, 1, next_tokens)
         return next_tokens.squeeze(1)
 
+
 class LMIDraftModelForSpeculation(DraftProvider):
     """
     Standard Implementation of Draft model provider that auto-regressively speculates k tokens.
@@ -247,12 +248,12 @@ class LMIDraftModelForSpeculation(DraftProvider):
         return inputs, next_token_scores
 
     def __call__(
-            self,
-            input_ids: torch.Tensor,
-            k: int,
-            cache_ids: Optional[torch.Tensor] = None,
-            start_ids: Optional[torch.Tensor] = None,
-            slot: Slot = None,
+        self,
+        input_ids: torch.Tensor,
+        k: int,
+        cache_ids: Optional[torch.Tensor] = None,
+        start_ids: Optional[torch.Tensor] = None,
+        slot: Slot = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Perform standard auto-regressive token generation using the draft model, to speculate k-tokens.
@@ -293,22 +294,20 @@ class LMIDraftModelForSpeculation(DraftProvider):
             cache_ids = torch.as_tensor([next_len], dtype=torch.int32)
             next_token_scores = self.model(inputs, cache_ids, start_ids)
 
-        return (
-            torch.cat(tokens, dim=1),
-            torch.cat(scores, dim=0)
-        )
+        return (torch.cat(tokens, dim=1), torch.cat(scores, dim=0))
 
 
 class LMITokenAcceptor(TokenAcceptor):
     """
     Optimized TokenAcceptor based on original DeepMind paper: https://arxiv.org/pdf/2302.01318.pdf
     """
+
     def __call__(
-            self,
-            draft_ids: torch.Tensor,
-            draft_scores: torch.Tensor,
-            target_scores: torch.Tensor,
-            slot: Slot,
+        self,
+        draft_ids: torch.Tensor,
+        draft_scores: torch.Tensor,
+        target_scores: torch.Tensor,
+        slot: Slot,
     ) -> torch.Tensor:
         draft_token_len, draft_vocab = draft_scores.shape
         target_token_len, target_vocab = target_scores.shape
@@ -330,14 +329,17 @@ class LMITokenAcceptor(TokenAcceptor):
         value = minimum.values.item()
         index = minimum.indices.item()
 
-        if value != 0: # If we didn't get a rejection this means all drafts were accepted
-            next_token, next_log_probs = slot.select(draft_ids, target_probabilities[-1:])
+        if value != 0:  # If we didn't get a rejection this means all drafts were accepted
+            next_token, next_log_probs = slot.select(draft_ids,
+                                                     target_probabilities[-1:])
             next_token_id = torch.LongTensor([[next_token]])
             return torch.cat((draft_ids, next_token_id), dim=1)
         else:
-            prob_diff = target_probabilities[index:index + 1] - draft_probabilities[index: index + 1]
+            prob_diff = target_probabilities[
+                index:index + 1] - draft_probabilities[index:index + 1]
             prob_diff = torch.clamp(prob_diff, min=0.0)
-            next_token, next_log_probs = slot.select(draft_ids[index - 1: index], prob_diff)
+            next_token, next_log_probs = slot.select(
+                draft_ids[index - 1:index], prob_diff)
             #next_token, next_log_probs = slot.select(draft_ids[index - 1: index], target_probabilities[index:index + 1])
             next_token_id = torch.LongTensor([[next_token]])
             return torch.cat((draft_ids[:, :index], next_token_id), dim=1)
@@ -347,12 +349,13 @@ class LMIGreedyTokenAcceptor(TokenAcceptor):
     """
     Optimized TokenAcceptor based on original DeepMind paper: https://arxiv.org/pdf/2302.01318.pdf
     """
+
     def __call__(
-            self,
-            draft_ids: torch.Tensor,
-            draft_scores: torch.Tensor,
-            target_scores: torch.Tensor,
-            slot: Slot,
+        self,
+        draft_ids: torch.Tensor,
+        draft_scores: torch.Tensor,
+        target_scores: torch.Tensor,
+        slot: Slot,
     ) -> torch.Tensor:
         draft_token_len, draft_vocab = draft_scores.shape
         target_token_len, target_vocab = target_scores.shape
@@ -363,10 +366,12 @@ class LMIGreedyTokenAcceptor(TokenAcceptor):
         target_ids = torch.argmax(target_probabilities, dim=1)
         draft_ids = draft_ids.squeeze()
 
-        # Minimum will return the first occurrence of 0 or False (i.e. rejection)
+        # Where will return mismatched tokens in a list, len(list) == 0 all tokens accepted
         index = torch.where(draft_ids != target_ids[:-1])[0]
 
-        if len(index) == 0: # If we didn't get a rejection this means all drafts were accepted
+        if len(
+                index
+        ) == 0:  # If we didn't get a rejection this means all drafts were accepted
             return torch.unsqueeze(target_ids, 0)
         else:
-            return torch.unsqueeze(target_ids[:index[0]+1], 0)
+            return torch.unsqueeze(target_ids[:index[0] + 1], 0)

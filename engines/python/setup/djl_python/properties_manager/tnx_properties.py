@@ -75,7 +75,7 @@ class TnXMemoryLayout(str, Enum):
     LAYOUT_SBH = "SBH"
 
 
-TNX_SUPPORTED_ROLLING_BATCH_TYPES = ['auto']
+TNX_SUPPORTED_ROLLING_BATCH_TYPES = ['auto', 'tnx']
 
 
 class TransformerNeuronXProperties(Properties):
@@ -93,6 +93,7 @@ class TransformerNeuronXProperties(Properties):
     amp: Optional[str] = None
     quantize: Optional[TnXQuantizeMethods] = None
     compiled_graph_path: Optional[str] = None
+    speculative_draft_model: Optional[str] = None
     draft_model_compiled_path: Optional[str] = None
     task: Optional[str] = None
     save_mp_checkpoint_path: Optional[str] = None
@@ -259,6 +260,8 @@ class TransformerNeuronXProperties(Properties):
                 properties['model_loader'] = TnXModelLoaders.tnx
             elif properties.get('context_length_estimate') is not None:
                 properties['model_loader'] = TnXModelLoaders.tnx
-            elif properties.get("draft_model_id") is not None:
+            elif properties.get('draft_model_id') is not None:
+                properties['model_loader'] = TnXModelLoaders.tnx
+            elif properties.get('speculative_draft_model') is not None:
                 properties['model_loader'] = TnXModelLoaders.tnx
         return properties

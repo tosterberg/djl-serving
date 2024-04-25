@@ -443,7 +443,7 @@ class SpeculativeRollingBatch(NeuronGenerator):
         else:
             self.draft_model = draft_model
         self.spec_length = spec_length
-        self.speculated_generations= list()
+        self.speculated_generations = list()
         self.acceptor = acceptor or LMIGreedyTokenAcceptor()
         self.prefill_generation = None
         super().__init__(model, tokenizer, batch_size, n_positions)
@@ -481,8 +481,9 @@ class SpeculativeRollingBatch(NeuronGenerator):
                                        padding=True)
         #  If needed truncate sequences to fit into the static dimensions
         if padded_inputs.input_ids.shape[-1] > self.n_positions:
-            logging.warning(f"Input tokens: {padded_inputs.input_ids.shape[-1]} - is larger than the"
-                            f"maximum for the model, truncating input...")
+            logging.warning(
+                f"Input tokens: {padded_inputs.input_ids.shape[-1]} - is larger than the"
+                f"maximum for the model, truncating input...")
         seq_length = min(padded_inputs.input_ids.shape[-1], self.n_positions)
         input_ids = padded_inputs.input_ids[:, :seq_length]
         attention_mask = padded_inputs.attention_mask[:, :seq_length]
@@ -501,14 +502,17 @@ class SpeculativeRollingBatch(NeuronGenerator):
         # Clear KV cache
         def prefill_draft(i_ids):
             self.draft_model.model.reset()
-            _, _ = self.draft_model(i_ids, self.spec_length, None, None, self.slots[0])
+            _, _ = self.draft_model(i_ids, self.spec_length, None, None,
+                                    self.slots[0])
 
         def prefill_target(i_ids, attn_mask):
             self.model.reset_generation()
             self.prefill_generation = self._generate_token(i_ids, attn_mask)
 
-        target_task = threading.Thread(target=prefill_target(input_ids, attention_mask), args=(input_ids,))
-        draft_task = threading.Thread(target=prefill_draft, args=(input_ids,))
+        target_task = threading.Thread(target=prefill_target(
+            input_ids, attention_mask),
+                                       args=(input_ids, ))
+        draft_task = threading.Thread(target=prefill_draft, args=(input_ids, ))
         target_task.start()
         draft_task.start()
         draft_task.join()
@@ -525,7 +529,6 @@ class SpeculativeRollingBatch(NeuronGenerator):
         if finish_reason:
             self._postprocess(slot)
         return [generation]
-
 
     def decode(self) -> List[Generation]:
         """Decode the specified prefilled requests.
@@ -566,8 +569,8 @@ class SpeculativeRollingBatch(NeuronGenerator):
             )
         return self._speculative_generate_token(input_ids, attention_mask)
 
-    def make_generations(self, request_id, slot, next_token,
-                         next_log_prob, next_token_text):
+    def make_generations(self, request_id, slot, next_token, next_log_prob,
+                         next_token_text):
         """Build the generation, and finish reason for response
         TODO: Refactor into a dataclass input
         """
@@ -628,21 +631,20 @@ class SpeculativeRollingBatch(NeuronGenerator):
             # Boundary condition: When number of leftover tokens to be generated is less than k,
             # we use the target model to use autoregressive generation the remaining tokens
             if current >= self.n_positions - 1 - self.spec_length:
-                model_inputs = self.prepare_model_inputs(input_ids, attention_mask,
-                                                         cache_ids, seq_ids)
+                model_inputs = self.prepare_model_inputs(
+                    input_ids, attention_mask, cache_ids, seq_ids)
                 outputs = self.model(
                     **model_inputs,
                     return_dict=True,
                 )
                 next_token_logits = outputs.logits[i:i + 1, -1, :]
                 slot_input_ids = input_ids[i:i + 1, :]
-                next_token, next_log_prob = slot.select(slot_input_ids,
-                                                        next_token_logits)
+                next_token, next_log_prob = slot.select(
+                    slot_input_ids, next_token_logits)
                 next_token_text = slot.decoder.decode(next_token.item())
                 slot.append(next_token, next_token_text)
                 generation, finish_reason = self.make_generations(
-                    request_id, slot, next_token, None,
-                    next_token_text)
+                    request_id, slot, next_token, None, next_token_text)
                 if finish_reason:
                     self._postprocess(slot)
                 return [generation]
@@ -651,8 +653,7 @@ class SpeculativeRollingBatch(NeuronGenerator):
             draft_cache_id = torch.tensor([current], dtype=torch.int32)
 
             draft_ids, draft_next_scores = self.draft_model(
-                input_ids, self.spec_length - 1, draft_cache_id,
-                None, slot)
+                input_ids, self.spec_length - 1, draft_cache_id, None, slot)
             cache_ids = torch.arange(current, current + draft_ids.shape[1] + 1)
             input_ids = torch.cat([input_ids, draft_ids], dim=1)
             target_next_scores = self.model.model.speculative_forward(
@@ -679,10 +680,10 @@ class SpeculativeRollingBatch(NeuronGenerator):
                 next_token_text = slot.decoder.decode(next_token.item())
                 slot.append(next_token, next_token_text)
                 generation, finish_reason = self.make_generations(
-                    request_id, slot, next_token, None,
-                    next_token_text)
+                    request_id, slot, next_token, None, next_token_text)
                 if len(generations) > 0:
-                    self.speculated_generations.append((generation, finish_reason))
+                    self.speculated_generations.append(
+                        (generation, finish_reason))
                 else:
                     generations.append(generation)
                     if finish_reason:
@@ -695,6 +696,5 @@ class SpeculativeRollingBatch(NeuronGenerator):
             # token into the KV cache since it was generated but never executed
             if num_accepted == self.spec_length:
                 self.draft_model(accepted_tokens[:, -2:-1], 1,
-                                 torch.tensor([current - 1]),
-                                 None, slot)
+                                 torch.tensor([current - 1]), None, slot)
         return generations

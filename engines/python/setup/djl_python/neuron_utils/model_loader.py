@@ -288,7 +288,7 @@ class TNXModelLoader(ModelLoader):
         # TODO: workaround on Neuron Compiler bug for SM
         path = os.getcwd()
         os.chdir("/tmp")
-        if self.config.draft_model_id:
+        if self.config.speculative_draft_model:
             logging.info("Enabling speculative decoding")
             self.model.enable_speculative_decoder(self.config.spec_length)
         if self.compiled_graph_path:

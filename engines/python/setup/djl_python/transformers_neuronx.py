@@ -92,7 +92,8 @@ class TransformersNeuronXService(object):
         if self.config.rolling_batch != "disable" and self.config.rolling_batch_strategy is None:
             if self.draft_model:
                 self.config.rolling_batch_strategy = TnXGenerationStrategy.speculative_rolling_batch
-            elif (self.model_config.model_type in OPTIMUM_CAUSALLM_CONTINUOUS_BATCHING_MODELS
+            elif (self.model_config.model_type
+                  in OPTIMUM_CAUSALLM_CONTINUOUS_BATCHING_MODELS
                   and self.config.max_rolling_batch_size > 1):
                 self.config.rolling_batch_strategy = TnXGenerationStrategy.continuous_batching
             else:
@@ -134,7 +135,7 @@ class TransformersNeuronXService(object):
         draft_properties = copy.deepcopy(properties)
         # Optimum currently doesn't support speculative decoding
         draft_properties["model_loader"] = TnXModelLoaders.tnx
-        draft_model_id = draft_properties.pop("draft_model_id")
+        draft_model_id = draft_properties.pop("speculative_draft_model")
         draft_properties["model_id"] = draft_model_id
         draft_compiled = draft_properties.pop("draft_model_compiled_path",
                                               None)
@@ -143,9 +144,9 @@ class TransformersNeuronXService(object):
         return draft_properties
 
     def pre_model_load(self, properties):
-        if properties.get("draft_model_id"):
+        if properties.get("speculative_draft_model"):
             logging.info(
-                f"Loading draft model {properties.get('draft_model_id')} ...")
+                f"Loading draft model {properties.get('speculative_draft_model')} ...")
             draft_properties = self.set_draft_model_properties(properties)
             self.initialize_draft_model(draft_properties)
             logging.info(
