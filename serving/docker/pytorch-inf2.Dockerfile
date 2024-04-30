@@ -34,7 +34,7 @@ COPY dockerd-entrypoint.sh /usr/local/bin/dockerd-entrypoint.sh
 RUN chmod +x /usr/local/bin/dockerd-entrypoint.sh
 WORKDIR /opt/djl
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-# ENV NO_OMP_NUM_THREADS=true
+ENV NO_OMP_NUM_THREADS=true
 ENV MODEL_SERVER_HOME=/opt/djl
 ENV DJL_CACHE_DIR=/tmp/.djl.ai
 ENV HF_HOME=/tmp/.cache/huggingface
@@ -73,8 +73,8 @@ RUN mkdir -p /opt/djl/bin && cp scripts/telemetry.sh /opt/djl/bin && \
     neuronx-cc==${neuronx_cc_version} torch-neuronx==${torch_neuronx_version} transformers-neuronx==${transformers_neuronx_version} \
     neuronx_distributed==${neuronx_distributed_version} protobuf==${protobuf_version} sentencepiece jinja2 \
     diffusers==${diffusers_version} opencv-contrib-python-headless  Pillow --extra-index-url=https://pip.repos.neuron.amazonaws.com \
-    pydantic==${pydantic_version} optimum optimum-neuron==${optimum_neuron_version} tiktoken blobfile && \
-    torchvision=${torchvision_version} && \
+    pydantic==${pydantic_version} optimum optimum-neuron==${optimum_neuron_version} tiktoken blobfile \
+    torchvision==${torchvision_version} && \
     scripts/install_s5cmd.sh x64 && \
     scripts/patch_oss_dlc.sh python && \
     useradd -m -d /home/djl djl && \

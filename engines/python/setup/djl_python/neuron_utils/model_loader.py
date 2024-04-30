@@ -19,7 +19,7 @@ import logging
 import tempfile
 import importlib
 from abc import ABC, abstractmethod
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, GenerationConfig
 from transformers_neuronx import NeuronAutoModelForCausalLM
 from transformers_neuronx.config import NeuronConfig, QuantizationConfig, ContinuousBatchingConfig
 from djl_python.properties_manager.tnx_properties import TnXGenerationStrategy, TnXModelSchema
@@ -92,6 +92,7 @@ class TNXModelLoader(ModelLoader):
         self.load_path = None
         self.split_model_path = None
         self.compiled_graph_path = None
+        self.generation_config = None
         self.neuron_config = None
         self.set_neuron_config()
 
@@ -240,6 +241,17 @@ class TNXModelLoader(ModelLoader):
                 filename.endswith(".safetensors")
                 for filename in os.listdir(model_path))
 
+    def load_generation_config(self):
+        if os.path.isfile(os.path.join(self.load_path, "generation_config.json")):
+            self.generation_config = GenerationConfig.from_pretrained(self.load_path)
+        elif os.path.isfile(os.path.join(self.config.model_id_or_path, "generation_config.json")):
+            self.generation_config = GenerationConfig.from_pretrained(self.load_path)
+        else:
+            try:
+                self.generation_config = GenerationConfig.from_pretrained(self.config.model_id_or_path)
+            except OSError:
+                logging.info("Unable to load generation config - defaulting to generation config from models config.json")
+
     def set_neuron_model(self) -> None:
         """
         Sets the path to which to load artifacts and loads the model - based on specified format
@@ -319,8 +331,9 @@ class TNXModelLoader(ModelLoader):
         self.set_neuron_model()
         self.maybe_compile_model()
         self.update_model_config_to_neuron()
+        self.load_generation_config()
         self.model = NeuronXModelAdapter(self.model, self.model_config,
-                                         self.load_path)
+                                         self.load_path, self.generation_config)
         return self.model
 
     def load_draft_model(self) -> NeuronAutoModelForCausalLM:
