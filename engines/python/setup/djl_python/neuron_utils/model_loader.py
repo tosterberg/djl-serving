@@ -262,19 +262,31 @@ class TNXModelLoader(ModelLoader):
                     "Unable to load generation config - defaulting to generation config from the models config.json"
                 )
 
+    def load_optimum_split_model(self, checkpoints) -> None:
+        self.config.load_split_model = True
+        self.split_model_path = checkpoints
+        self.compiled_graph_path = os.path.join(self.get_load_path(),
+                                                "compiled")
+        self.load_path = self.split_model_path
+        self.model = self.load_inf2_model_from_disk()
+
+    def load_optimum_auto_model(self, checkpoints) -> None:
+        self.model = self.load_auto_model(checkpoints)
+        self.compiled_graph_path = os.path.join(self.get_load_path(),
+                                                "compiled")
+        self.load_path = checkpoints
+
     def set_neuron_model(self) -> None:
         """
         Sets the path to which to load artifacts and loads the model - based on specified format
         """
         if "neuron" in self.model_config.to_dict(
         ) and not self.safetensors_format:
-            self.config.load_split_model = True
-            self.split_model_path = os.path.join(self.get_load_path(),
-                                                 "checkpoint")
-            self.compiled_graph_path = os.path.join(self.get_load_path(),
-                                                    "compiled")
-            self.load_path = self.split_model_path
-            self.model = self.load_inf2_model_from_disk()
+            checkpoint_folder = os.path.join(self.get_load_path(), "checkpoint")
+            if os.path.isdir(os.path.join(checkpoint_folder, "pytorch_model.bin")):
+                self.load_optimum_split_model(checkpoint_folder)
+            else:
+                self.load_optimum_auto_model(checkpoint_folder)
         elif self.config.load_split_model:
             self.load_path = self.config.model_id_or_path
             self.model = self.load_inf2_model_from_disk()
@@ -366,19 +378,20 @@ class TNXModelLoader(ModelLoader):
         self.model = self.load_inf2_model_from_disk()
         self.compile_and_save(self.compiled_graph_path)
 
-    def safetensors_partition(self, save_path: str):
+    def safetensors_partition(self, save_path: str, **kwargs):
         """
         Saves the model weights as safetensors, updates config to neuron, and adds compiled artifacts.
 
         :param save_path: Path to which to save the compiled model.
         """
-        # TODO: Update with final schema
+        safetensors_checkpoint = os.path.join(save_path, "checkpoint")
+        os.mkdir(safetensors_checkpoint)
         self.compiled_graph_path = os.path.join(save_path, "compiled")
         os.mkdir(self.compiled_graph_path)
 
         self.model = self.load_hf_model()
-        self.model.save_pretrained(save_path)
-        self.model = self.load_auto_model(self.config.model_id_or_path)
+        self.model.save_pretrained(safetensors_checkpoint, **kwargs)
+        self.model = self.load_auto_model(safetensors_checkpoint)
         self.compile_and_save(self.compiled_graph_path)
 
     def partition(self, save_path: str, **kwargs):
@@ -403,9 +416,11 @@ class TNXModelLoader(ModelLoader):
             os.mkdir(save_path)
 
         if model_schema == TnXModelSchema.safetensors:
-            # Raise an error pending finalized schema for using safetensors
-            raise NotImplementedError(
-                "Safetensors compiled model schema is not available.")
+            logging.info(
+                "Partitioning model to safetensors checkpoints with compiled artifacts schema..."
+            )
+            sharding_config = dict(max_shard_size=kwargs.get("max_shard_size", "5GB"))
+            self.safetensors_partition(save_path, **sharding_config)
         elif model_schema == TnXModelSchema.compile_only:
             logging.info("Compiling model artifacts only...")
             self.model = self.load_auto_model(self.config.model_id_or_path)

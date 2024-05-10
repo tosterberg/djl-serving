@@ -24,7 +24,7 @@ ARG transformers_version=4.36.2
 ARG accelerate_version=0.23.0
 ARG diffusers_version=0.26.1
 ARG pydantic_version=2.6.1
-ARG optimum_neuron_version=0.0.21
+ARG optimum_neuron_version=0.0.22
 ARG vllm_wheel="https://publish.djl.ai/neuron_vllm/vllm-nightly-py3-none-any.whl"
 EXPOSE 8080
 
