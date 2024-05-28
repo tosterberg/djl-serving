@@ -15,6 +15,7 @@ import unittest
 from transformers import AutoConfig, AutoTokenizer
 from unittest.mock import MagicMock, Mock, patch
 from djl_python.tests.utils import parameterized, parameters, mock_import_modules
+from typing import Union
 
 MOCK_MODULES = [
     "torch_neuronx", "neuronxcc", "transformers_neuronx",
@@ -35,6 +36,7 @@ from djl_python.properties_manager.tnx_properties import TransformerNeuronXPrope
 from djl_python.transformers_neuronx import TransformersNeuronXService
 from djl_python.neuron_utils.model_loader import TNXModelLoader, OptimumModelLoader
 from djl_python.rolling_batch.neuron_rolling_batch import NeuronRollingBatch
+from djl_python.rolling_batch.rolling_batch import stop_on_any_exception
 
 
 @parameterized
@@ -218,6 +220,19 @@ class TestTransformerNeuronXService(unittest.TestCase):
         self.assertEqual(test_properties["save_mp_checkpoint_path"],
                          self.service.config.save_mp_checkpoint_path)
         self.assertTrue(self.service.initialized)
+
+    def test_stop_raise(self):
+
+        @stop_on_any_exception
+        def some_function(cls) -> RuntimeError:
+            raise RuntimeError
+
+        mock_rb = Mock()
+        mock_rb.active_requests = ["request"]
+        mock_rb.pending_requests = []
+        mock_rb.reset.return_value = None
+        with self.assertRaises(RuntimeError):
+            some_function(mock_rb)
 
     def tearDown(self):
         del self.service

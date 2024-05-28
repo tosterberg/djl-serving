@@ -10,6 +10,7 @@
 # or in the "LICENSE.txt" file accompanying this file. This file is distributed on an "AS IS"
 # BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, express or implied. See the License for
 # the specific language governing permissions and limitations under the License.
+import sys
 import json
 import logging
 import time
@@ -392,21 +393,28 @@ def stop_on_any_exception(func):
     def try_catch_handling(self, *args, **kwargs):
         try:
             return func(self, *args, **kwargs)
-        except Exception:
+        except Exception as e:
+            t, v, tb = sys.exc_info()
             logging.exception("Rolling batch inference error")
-            err = {
-                "data": "",
-                "last": True,
-                "step_token_num": 0,
-                "code": 424,
-                "error": ""
-            }
-            results = []
-            for i in range(
-                    len(self.active_requests) + len(self.pending_requests)):
-                results.append(err)
-            self.reset()
-            return results
+            try:
+                if type(e) == RuntimeError:
+                    logging.exception("Unrecoverable error occurred during inference.")
+                    raise RuntimeError
+                err = {
+                    "data": "",
+                    "last": True,
+                    "step_token_num": 0,
+                    "code": 424,
+                    "error": ""
+                }
+                results = []
+                for i in range(
+                        len(self.active_requests) + len(self.pending_requests)):
+                    results.append(err)
+                self.reset()
+                return results
+            except RuntimeError:
+                raise t(v).with_traceback(tb)
 
     return try_catch_handling
 
