@@ -12,7 +12,6 @@
 # the specific language governing permissions and limitations under the License.
 
 import torch
-import logging
 from typing import Optional, Any
 from djl_python.rolling_batch.rolling_batch import RollingBatch, stop_on_any_exception, FINISH_REASON_MAPPER
 from djl_python.request_io import Token
