@@ -12,11 +12,8 @@
 # the specific language governing permissions and limitations under the License.
 
 import unittest
-import warnings
 import json
 import os
-import sys
-from collections import defaultdict
 
 try:
     from djl_python.transformers_neuronx import TransformersNeuronXService
@@ -26,32 +23,23 @@ except ImportError:
 
 expected_text_30 = {
     "TinyLlama/TinyLlama-1.1B-Chat-v0.6": {
-        1:
+        0:
         "Hello, my name is [Your Name] and I am a [Your Job Title] at [Your Company Name]. I am interested in learning more about your company'",
-        2:
+        1:
         'The president of the United States is a man named Donald Trump.\n\n2. The president of the United States is a man named Donald Trump.\n\n3. The president',
-        3:
+        2:
         'The capital of France is Paris.\n\n2. The capital of the United States is Washington, D.C.\n\n3. The capital of Canada is Ott',
-        4:
+        3:
         "The future of AI is bright, and it's not just in the realm of science fiction. Artificial intelligence is already being used in a wide range of industries",
     }
 }
-
-OPTIMUM_CAUSALLM_MODEL_TYPES = {"gpt2", "opt", "bloom", "llama", "mistral"}
-OPTIMUM_CAUSALLM_CONTINUOUS_BATCHING_MODELS = {"llama", "mistral"}
-VLLM_CONTINUOUS_BATCHING_MODELS = {"llama"}
 
 @unittest.skipIf(SKIP_TEST, "Neuron dependencies are not available")
 class TestNeuronRollingBatch(unittest.TestCase):
 
     def test_models(self):
         # === Preparation ===
-        script_directory = os.path.dirname(os.path.abspath(__file__))
-        relative_path = "../rolling_batch_test_scripts"
-        new_path = os.path.normpath(
-            os.path.join(script_directory, relative_path))
-        sys.path.append(new_path)
-        from djl_python.tests.rolling_batch_test_scripts.run_rolling_batch_alone import  init_rolling_batch, simulator
+        from djl_python.tests.neuron_test_scripts.neuron_rb_generator import NeuronRollingBatchGenerator, SimulationSchedule
 
         # --- Models ---
         model_names = [
@@ -70,28 +58,104 @@ class TestNeuronRollingBatch(unittest.TestCase):
             }
 
             # ===================== neuron-tnx ============================
-            print('========== init inference ===========')
-            input_str1 = [
-                "Hello, my name is",  # 6
-                "The president of the United States is",  # 8
-                "The capital of France is",  # 6
-                "The future of AI is"
-            ]  # 7
+            gen = NeuronRollingBatchGenerator()
+            gen.init_neuron_service(properties)
 
-            params1 = [{
+            print('========== init inference ===========')
+            input_str = [
+                "Hello, my name is",
+                "The president of the United States is",
+                "The capital of France is",
+                "The future of AI is",
+            ]
+
+            params = [{
                 "max_new_tokens": 100,
                 "do_sample": False,
-            }.copy() for _ in range(len(input_str1))]
+            }.copy() for _ in range(len(input_str))]
 
-            batcher = init_rolling_batch("neuron", model_id, properties)
-            simulator(batcher, input_str1, params1, [1, 1, 1, 1], 1)
+            test_input = SimulationSchedule(
+                prompts=input_str,
+                params=params,
+                reqs_to_prefill=[1, 1, 1, 1],
+                wait_steps=[1, 4, 5, 1]
+            )
 
-            batcher = None
+            gen.simulator(test_input)
+
+            for i, out in enumerate(gen.responses):
+                out_dict = json.loads(''.join(out))
+                out_str = out_dict["generated_text"]
+                test_generation = input_str[i] + " " + out_str
+                print(
+                    f"\n====req_id: {i}=====\n{test_generation}\n"
+                )
+                if model_id in expected_text_30 and i in expected_text_30[model_id]:
+                    expected_prefix_30_req_id = expected_text_30[model_id][i]
+                    assert expected_prefix_30_req_id == test_generation[:len(expected_prefix_30_req_id)]
+
+            gen.reset()
+            del gen
             import gc
             gc.collect()
 
+    def test_tiny_models(self):
+        # === Preparation ===
+        from djl_python.tests.neuron_test_scripts.neuron_rb_generator import NeuronRollingBatchGenerator, SimulationSchedule
+        from djl_python.tests.neuron_test_scripts.tiny_models import artifacts
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+        # --- Models ---
+        model_names = [
+            "llama",
+            "mistral",
+            "mixtral",
+            "gpt2",
+            "gptneox"
+            "bloom",
+        ]
+
+        # === Test ===
+        for model_id in model_names:
+            properties = {
+                "tensor_parallel_degree": 1,
+                "n_positions": "128",
+                "rolling_batch": "tnx",
+                "max_rolling_batch_size": 4,
+                "model_loading_timeout": 3600,
+                "model_id": artifacts(model_id)
+            }
+
+            # ===================== neuron-tnx ============================
+            gen = NeuronRollingBatchGenerator()
+            gen.init_neuron_service(properties)
+
+            print('========== init inference ===========')
+            input_str = [
+                "Hello, my name is",
+                "The president of the United States is",
+                "The capital of France is",
+                "The future of AI is",
+            ]
+
+            params = [{
+                            "max_new_tokens": 100,
+                            "do_sample": False,
+                            "ignore_eos": True,
+                      }.copy() for _ in range(len(input_str))]
+
+            test_input = SimulationSchedule(
+                prompts=input_str,
+                params=params,
+                reqs_to_prefill=[1, 1, 1, 1],
+                wait_steps=[1, 4, 5, 1]
+            )
+
+            gen.simulator(test_input)
+            gen.reset()
+            del gen
+            import gc
+            gc.collect()
 
 if __name__ == '__main__':
-    #unittest.main()
-    c = TestNeuronRollingBatch()
-    c.test_models()
+    unittest.main()
