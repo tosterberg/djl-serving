@@ -21,6 +21,7 @@ LMI containers provide many features, including:
 * Integration with open source inference libraries like vLLM, TensorRT-LLM, and Transformers NeuronX
 * Continuous Batching for maximizing throughput at high concurrency
 * Token Streaming
+* Text Embedding
 * Quantization through AWQ, GPTQ, and SmoothQuant
 * Multi GPU inference using Tensor Parallelism
 * Serving LoRA fine-tuned models
