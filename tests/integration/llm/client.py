@@ -75,7 +75,7 @@ hf_model_spec = {
         "stream_output": True,
     },
     "gpt4all-lora": {
-        "max_memory_per_gpu": [10.0, 12.0],
+        "max_memory_per_gpu": [14.0, 18.0],
         "batch_size": [1, 4],
         "seq_length": [16, 32],
         "worker": 1,
