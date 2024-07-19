@@ -222,7 +222,7 @@ class TestAarch64:
 class TestHfHandler:
 
     def test_gpt_neo(self):
-        with Runner('lmi', 'test_gpt4all_lora') as r:
+        with Runner('lmi', 'gpt-neo-2.7b') as r:
             prepare.build_hf_handler_model("gpt-neo-2.7b")
             r.launch()
             client.run("huggingface gpt-neo-2.7b".split())
