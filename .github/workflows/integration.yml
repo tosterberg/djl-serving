@@ -140,6 +140,7 @@ jobs:
         run: |
           # Using an alternate installation because of an incompatible combination
           # of aarch64 with ubuntu-20.04 not supported by the actions/setup-python
+          sudo dpkg --configure -a
           sudo apt-get install python3 python-is-python3 python3-pip -y
       - name: Install pip dependencies
         run: pip3 install pytest requests "numpy<2" pillow huggingface_hub
